@@ -1,15 +1,20 @@
+#include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2561_U.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+
+#define lightOnTimeSeconds 10
 
 //Constantes
 const bool DEBUG = false;
 const float LUX_THRESHOLD = 20.0;
 
 // GPIOs
-const int HUMIDIFER_PIN = 13;
+const int HUMIDIFIER_PIN = 12;
+const int LIGHT_PIN = 15;
 const int ESP_LED_BUILTIN = 2;
+const int MOTION_SENSOR_PIN = 13;
 
 // Mudanças no estado de dispositivos Digitais
 // -1 Representa que não houve mudança no estado
@@ -21,8 +26,8 @@ const int STATE_TURNED_OFF = 0;
 
 
 // Conexecoes
-const char* ssid = "ssid do wifi";
-const char* password = "senha do wifi";
+const char* ssid = "ssid";
+const char* password = "password";
 const char* mqtt_broker = "mqtt.eclipseprojects.io";
 WiFiClient wifiClient;
 PubSubClient client(wifiClient);
@@ -33,6 +38,8 @@ Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 1234
 //Variaveis para valores dos sensores
 int luxValue;
 int lightStateChanges;
+int humidityValue = 60;
+int tempValue = 24;
 
 // Tempos
 unsigned long mqttPublishPreviousMillis = 0;
@@ -40,6 +47,59 @@ unsigned long mqttPublishPreviousMillis = 0;
 // Intervalos de Tasks
 const long MQTT_PUBLISH_DATA_INTERVAL = 2000;
 
+
+// Timer: Auxiliary variables
+unsigned long now = millis();
+unsigned long motionSensorLastTrigger = 0;
+boolean motionSensorStartTimer = false;
+
+// Interrupcao de deteccao de movimento
+ICACHE_RAM_ATTR void detectsMovement() {
+  Serial.println("MOTION DETECTED!!!");
+
+  if(luxValue < LUX_THRESHOLD) {
+    digitalWrite(LIGHT_PIN, HIGH);
+    motionSensorStartTimer = true;
+    motionSensorLastTrigger = millis();
+  }
+
+  
+}
+
+void setup(void) 
+{
+  // GPIOs
+  pinMode(ESP_LED_BUILTIN, OUTPUT);
+  pinMode(HUMIDIFIER_PIN, OUTPUT);
+  pinMode(LIGHT_PIN, OUTPUT);
+  pinMode(MOTION_SENSOR_PIN, INPUT_PULLUP);
+
+  // GPIOs inicializacao
+  digitalWrite(HUMIDIFIER_PIN, HIGH);
+  digitalWrite(LIGHT_PIN, LOW);
+  
+  // Serial
+  Serial.begin(9600);
+
+  // Interrupcao
+    attachInterrupt(digitalPinToInterrupt(MOTION_SENSOR_PIN), detectsMovement, RISING);
+ 
+  // Sensores
+  if(!tsl.begin())
+  {
+    Serial.print("Sensor TSL2561 não detectado");
+    while(1);
+  }
+  tsl.enableAutoRange(true);
+  tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
+
+  // Wifi
+  wifi_connect();
+  client.setServer(mqtt_broker,1883);
+
+  // Hello World
+  Serial.println("UFABC: Sistemas Microprocessados 2022.1");
+}
 
 // estabelece conexao com rede wifi 2.4Ghz
 void wifi_connect(){
@@ -65,7 +125,8 @@ void wifi_connect(){
   digitalWrite(ESP_LED_BUILTIN, LOW);
   Serial.println("***************************************\n\n");
 }
-// Restabelece conexão com broker mqtt ao inicar ou caso tenha caido
+
+// Restabelece conexão com broker mqtt
 void reconnect_MQTT(){
   while (!client.connected()) {
     delay(500);
@@ -73,36 +134,6 @@ void reconnect_MQTT(){
     Serial.println("Reconnecting MQTT...");
   }
 }
-
-void setup(void) 
-{
-  // GPIOs
-  pinMode(ESP_LED_BUILTIN, OUTPUT);
-  pinMode(HUMIDIFER_PIN, OUTPUT);
-
-  // GPIOs inicializacao
-  digitalWrite(HUMIDIFER_PIN, HIGH);
-  
-  // Serial
-  Serial.begin(9600);
- 
-  // Sensores
-  if(!tsl.begin())
-  {
-    Serial.print("Sensor TSL2561 não detectado");
-    while(1);
-  }
-  tsl.enableAutoRange(true);
-  tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
-
-  // Wifi
-  wifi_connect();
-  client.setServer(mqtt_broker,1883);
-
-  // Hello World
-  Serial.println("UFABC: Sistemas Microprocessados 2022.1");
-}
-
 
 int getLuxValueFromTSL2561(void) {
   if (DEBUG) Serial.print("[TSL_2661] Lendo valor do sensor...  ");
@@ -113,32 +144,24 @@ int getLuxValueFromTSL2561(void) {
   return event.light;
 }
 
-void sendLightConditionData(int lux, int state_changes) {
-  // int lux, estado antigo, estado atual
-}
-
 void checkLightConditions(void) {
-  lightStateChanges = STATE_NO_CHANGES;
   luxValue = getLuxValueFromTSL2561();
-  int lightDigitalValue = digitalRead(HUMIDIFER_PIN);
-
-  if (luxValue < LUX_THRESHOLD) {
-    if(lightDigitalValue != LOW) {
-      Serial.println("turning ON light");
-      digitalWrite(HUMIDIFER_PIN, LOW);
-      lightStateChanges = STATE_TURNED_ON;
-    }
-  } else {
-    if(lightDigitalValue != HIGH) {
-      Serial.println("turning OFF light");
-      digitalWrite(HUMIDIFER_PIN, HIGH);
-      lightStateChanges = STATE_TURNED_OFF;
-    }
+  int lightDigitalValue = digitalRead(LIGHT_PIN);
+  
+  unsigned long currentMillis = millis();
+  if(motionSensorStartTimer && (currentMillis - motionSensorLastTrigger > (lightOnTimeSeconds*1000))) {
+    Serial.println("Motion stopped...");
+    digitalWrite(LIGHT_PIN, LOW);
+    motionSensorStartTimer = false;
   }
 }
 
 void checkHumidityConditions(void) {
-  
+  // TODO
+}
+
+void checkTemperatureConditions(void) {
+  // TODO
 }
 
 void publishMQTTData(){
@@ -147,13 +170,20 @@ void publishMQTTData(){
   
   if((currentMillis - mqttPublishPreviousMillis) >= MQTT_PUBLISH_DATA_INTERVAL) {
     mqttPublishPreviousMillis = currentMillis;
-    // The true parameter persist information in topic
-    client.publish("ufabc_sustentable_house/lux", String(luxValue).c_str(), false);
+
+    int lightState = digitalRead(LIGHT_PIN);
+    int humidifierState = digitalRead(HUMIDIFIER_PIN);
+    
+    // Informacoes sobre iluminacao
+    client.publish("ufabc_sustentable_house/lux_value", String(luxValue).c_str(), false);
+    client.publish("ufabc_sustentable_house/light_state", String(lightState).c_str(), false);
   
-    // Umidade
-    client.publish("ufabc_sustentable_house/humidifier_state", String(digitalRead(HUMIDIFER_PIN)).c_str(), false);
+    // Umidade e Temperatura
+    client.publish("ufabc_sustentable_house/humidity_value", String(humidityValue).c_str(), false);
+    client.publish("ufabc_sustentable_house/humidifier_state", String(humidifierState).c_str(), false);
+    client.publish("ufabc_sustentable_house/temp_value", String(tempValue).c_str(), false);
   
-    // Shows publication success in the MQTT topic blinking internal led
+    // Piscar led interno indicando envio de dados via MQTT
     digitalWrite(ESP_LED_BUILTIN, HIGH);
     delay(50);
     digitalWrite(ESP_LED_BUILTIN, LOW);
@@ -174,10 +204,10 @@ void loop(void)
   // Tasks
   checkLightConditions();
   checkHumidityConditions();
+  checkTemperatureConditions();
 
   // Send data to MQTT
   publishMQTTData();
 
   delay(100);
 }
- 
