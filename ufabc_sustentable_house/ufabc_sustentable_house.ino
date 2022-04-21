@@ -9,23 +9,15 @@
 //Constantes
 const bool DEBUG = false;
 const float LUX_THRESHOLD = 20.0;
+const long MQTT_PUBLISH_DATA_INTERVAL = 2000;
 
 // GPIOs
+const int ESP_LED_BUILTIN = 2;
 const int HUMIDIFIER_PIN = 12;
 const int LIGHT_PIN = 15;
-const int ESP_LED_BUILTIN = 2;
 const int MOTION_SENSOR_PIN = 13;
 
-// Mudanças no estado de dispositivos Digitais
-// -1 Representa que não houve mudança no estado
-//  1 Representa que o dispositivo estava desligado e foi ligado
-//  0 Representa que o dispositivo estava ligado e foi desligado
-const int STATE_NO_CHANGES = -1;
-const int STATE_TURNED_ON = 1;
-const int STATE_TURNED_OFF = 0;
-
-
-// Conexecoes
+// Network
 const char* ssid = "ssid";
 const char* password = "password";
 const char* mqtt_broker = "mqtt.eclipseprojects.io";
@@ -38,33 +30,15 @@ Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 1234
 //Variaveis para valores dos sensores
 int luxValue;
 int lightStateChanges;
-int humidityValue = 60;
+int humidityValue = 59;
 int tempValue = 24;
 
-// Tempos
+// Tempo: Variaveis auxiliares de tempo
 unsigned long mqttPublishPreviousMillis = 0;
-
-// Intervalos de Tasks
-const long MQTT_PUBLISH_DATA_INTERVAL = 2000;
-
-
-// Timer: Auxiliary variables
-unsigned long now = millis();
+unsigned long currentMillis = millis();
 unsigned long motionSensorLastTrigger = 0;
 boolean motionSensorStartTimer = false;
 
-// Interrupcao de deteccao de movimento
-ICACHE_RAM_ATTR void detectsMovement() {
-  Serial.println("MOTION DETECTED!!!");
-
-  if(luxValue < LUX_THRESHOLD) {
-    digitalWrite(LIGHT_PIN, HIGH);
-    motionSensorStartTimer = true;
-    motionSensorLastTrigger = millis();
-  }
-
-  
-}
 
 void setup(void) 
 {
@@ -82,7 +56,7 @@ void setup(void)
   Serial.begin(9600);
 
   // Interrupcao
-    attachInterrupt(digitalPinToInterrupt(MOTION_SENSOR_PIN), detectsMovement, RISING);
+  attachInterrupt(digitalPinToInterrupt(MOTION_SENSOR_PIN), detectsMovement, RISING);
  
   // Sensores
   if(!tsl.begin())
@@ -135,6 +109,18 @@ void reconnect_MQTT(){
   }
 }
 
+// Interrupcao de deteccao de movimento
+ICACHE_RAM_ATTR void detectsMovement() {
+  if (DEBUG) Serial.println("Movimento Detectado!");
+
+  if(luxValue < LUX_THRESHOLD) {
+    digitalWrite(LIGHT_PIN, HIGH);
+    motionSensorStartTimer = true;
+    motionSensorLastTrigger = millis();
+  }
+ 
+}
+
 int getLuxValueFromTSL2561(void) {
   if (DEBUG) Serial.print("[TSL_2661] Lendo valor do sensor...  ");
   sensors_event_t event;
@@ -144,29 +130,30 @@ int getLuxValueFromTSL2561(void) {
   return event.light;
 }
 
-void checkLightConditions(void) {
+void checkLightConditions(unsigned long currentMillis) {
   luxValue = getLuxValueFromTSL2561();
   int lightDigitalValue = digitalRead(LIGHT_PIN);
   
-  unsigned long currentMillis = millis();
   if(motionSensorStartTimer && (currentMillis - motionSensorLastTrigger > (lightOnTimeSeconds*1000))) {
-    Serial.println("Motion stopped...");
+    if (DEBUG) Serial.println("Desligando Luz...");
     digitalWrite(LIGHT_PIN, LOW);
     motionSensorStartTimer = false;
   }
 }
 
-void checkHumidityConditions(void) {
+void checkHumidityConditions(unsigned long currentMillis) {
+  if(luxValue < 20) {
+    digitalWrite(HUMIDIFIER_PIN, LOW);
+  } else {
+    digitalWrite(HUMIDIFIER_PIN, HIGH);
+  }
+}
+
+void checkTemperatureConditions(unsigned long currentMillis) {
   // TODO
 }
 
-void checkTemperatureConditions(void) {
-  // TODO
-}
-
-void publishMQTTData(){
-
-  unsigned long currentMillis = millis();
+void publishMQTTData(unsigned long currentMillis){
   
   if((currentMillis - mqttPublishPreviousMillis) >= MQTT_PUBLISH_DATA_INTERVAL) {
     mqttPublishPreviousMillis = currentMillis;
@@ -201,13 +188,15 @@ void loop(void)
     reconnect_MQTT();
   }
 
+  currentMillis = millis();
+  
   // Tasks
-  checkLightConditions();
-  checkHumidityConditions();
-  checkTemperatureConditions();
+  checkLightConditions(currentMillis);
+  checkHumidityConditions(currentMillis);
+  checkTemperatureConditions(currentMillis);
 
   // Send data to MQTT
-  publishMQTTData();
+  publishMQTTData(currentMillis);
 
   delay(100);
 }
