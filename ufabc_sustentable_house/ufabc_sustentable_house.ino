@@ -3,6 +3,7 @@
 #include <Adafruit_TSL2561_U.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <EEPROM.h>
 
 #define lightOnTimeSeconds 10
 
@@ -18,8 +19,8 @@ const int LIGHT_PIN = 15;
 const int MOTION_SENSOR_PIN = 13;
 
 // Network
-const char* ssid = "ssid";
-const char* password = "password";
+char wifiSsid[32] = "";
+char wifiPassword[32] = "";
 const char* mqtt_broker = "mqtt.eclipseprojects.io";
 WiFiClient wifiClient;
 PubSubClient client(wifiClient);
@@ -67,21 +68,65 @@ void setup(void)
   tsl.enableAutoRange(true);
   tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
 
+  // Hello World
+  Serial.println("\n\nUFABC: Sistemas Microprocessados 2022.1\n\n\n");
+  delay(500);
+  
   // Wifi
   wifi_connect();
   client.setServer(mqtt_broker,1883);
 
-  // Hello World
-  Serial.println("UFABC: Sistemas Microprocessados 2022.1");
+}
+
+void readWifiConnectionData(void) {
+  EEPROM.begin(512);
+  EEPROM.get(0, wifiSsid);
+  EEPROM.get(0+sizeof(wifiSsid), wifiPassword);
+  char ok[2+1];
+  EEPROM.get(0+sizeof(wifiSsid)+sizeof(wifiPassword), ok);
+  EEPROM.end();
+  if (String(ok) != String("OK")) {
+    wifiSsid[0] = 0;
+    wifiPassword[0] = 0;
+  }
+  
+  if(strlen(wifiPassword)==0) {
+    Serial.println("\n\nDados de Wifi nao encontrados em memoria\nPor favor digite nome e senha do seu Wifi\n\n");
+    Serial.print("Digite o nome do Wifi: ");
+    while(Serial.available() == 0) {}
+    String ssid = Serial.readString();
+    ssid.trim();
+    ssid.toCharArray(wifiSsid, 32);
+    Serial.println();
+    Serial.print("Digite a senha do Wifi: ");
+    while(Serial.available() == 0) {}
+    String password = Serial.readString();
+    password.trim();
+    password.toCharArray(wifiPassword, 32);
+    Serial.println();
+
+    EEPROM.begin(512);
+    EEPROM.put(0, wifiSsid);
+    EEPROM.put(0+sizeof(wifiSsid), wifiPassword);
+    char ok[2+1] = "OK";
+    EEPROM.put(0+sizeof(wifiSsid)+sizeof(wifiPassword), ok);
+    EEPROM.commit();
+    EEPROM.end();
+  } else {
+    Serial.println();
+    Serial.println("Credenciais de Wifi Encontradas:");
+    Serial.println(wifiSsid);
+    Serial.println("********");
+  }
 }
 
 // estabelece conexao com rede wifi 2.4Ghz
 void wifi_connect(){
-  delay(10);
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+  readWifiConnectionData();
+  
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(wifiSsid, wifiPassword);
+  Serial.print("Conectando ao Wifi");
   while (WiFi.status() != WL_CONNECTED) {
     digitalWrite(ESP_LED_BUILTIN, LOW);
     delay(200);
@@ -92,8 +137,9 @@ void wifi_connect(){
     digitalWrite(ESP_LED_BUILTIN, HIGH);
     Serial.print(".");
   }
-  Serial.println("");
-  Serial.println("WiFi connected");
+  Serial.println("\n\n***************************************\n\n");
+  Serial.print("Connected to Wifi: ");
+  Serial.println(wifiSsid);
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
   digitalWrite(ESP_LED_BUILTIN, LOW);
