@@ -1,5 +1,5 @@
 // estabelece conexao com rede wifi 2.4Ghz
-void wifi_connect(){
+void wifiConnect(){
   readWifiConnectionData();
   
   WiFi.mode(WIFI_STA);
@@ -15,20 +15,20 @@ void wifi_connect(){
     digitalWrite(BUILTIN_LED_PIN, HIGH);
     Serial.print(".");
   }
-  Serial.println("\n\n***************************************\n\n");
-  Serial.print("Connected to Wifi: ");
+  Serial.println("\n\n***************************************");
+  Serial.print("Conectado ao Wifi: ");
   Serial.println(wifiSsid);
-  Serial.println("IP address: ");
+  Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
   digitalWrite(BUILTIN_LED_PIN, LOW);
-  Serial.println("***************************************\n\n");
+  Serial.println("***************************************\n");
 }
 
 // Restabelece conexão com broker mqtt
-void reconnect_MQTT(){
+void reconnectMQTT(){
   while (!client.connected()) {
     delay(500);
     client.connect("UFABC_bsUWuxIuMqCa");
-    Serial.println("Reconnecting MQTT...");
+    Serial.println("Reconectando ao broker MQTT...");
   }
 }

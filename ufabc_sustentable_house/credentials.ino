@@ -15,7 +15,7 @@ void readWifiConnectionData(void) {
   }
   
   if(strlen(wifiPassword)==0) {
-    Serial.println("\n\nDados de Wifi nao encontrados em memoria\nPor favor digite nome e senha do seu Wifi\n\n");
+    Serial.println("\nDados de Wifi nao encontrados em memoria\nPor favor digite nome e senha do seu Wifi\n");
     Serial.print("Digite o nome do Wifi: ");
     while(Serial.available() == 0) {}
     String ssid = Serial.readString();
@@ -42,4 +42,12 @@ void readWifiConnectionData(void) {
     Serial.println(wifiSsid);
     Serial.println("********");
   }
+}
+
+// Funcao que apaga as credenciais de wifi da memoria quando botao de reset eh pressionado por mais de 3 segundos
+void deleteWifiConnectionDataAndRestart(void) {
+  EEPROM.begin(512);
+  for (int i = 0; i < 512; i++) { EEPROM.write(i, 0); }
+  EEPROM.end();
+  ESP.restart();
 }

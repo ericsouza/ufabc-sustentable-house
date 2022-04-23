@@ -13,7 +13,8 @@
 #define HUMIDITY_THRESHOLD 80.0f // Limiar para ligar Umidificador, abaixo desse valor ele sera ligado
 #define LUX_THRESHOLD 20.0f // Limiar para Ligar a luz, abaixo desse valor o LED/Lampada sera ligada
 #define MQTT_PUBLISH_DATA_INTERVAL 2000 // Intervalor para publicacao dos dados dos sensores para MQTT
-#define DEBUG 1 // Habilita mensagens de debug na serial
+#define TIME_TO_RESET_CREDENTIALS 3000  // Tempo que o botao de reset deve ser pressionado para que os dados de wifi sejam apagados da memoria (reset)
+#define DEBUG 0 // Habilita mensagens de debug na serial
 
 // GPIOs
 #define BUILTIN_LED_PIN 2
@@ -25,7 +26,7 @@
 // Network
 char wifiSsid[32] = "";
 char wifiPassword[32] = "";
-const char* mqtt_broker = "mqtt.eclipseprojects.io";
+const char* mqttBroker = "mqtt.eclipseprojects.io";
 WiFiClient wifiClient;
 PubSubClient client(wifiClient);
 
@@ -39,11 +40,13 @@ int lightStateChanges;
 float humidityValue = 0.0;
 float tempValue = 0.0;
 boolean motionSensorStarted = false;
+boolean resetButtonPressed = false;
 
 // Tempo: Variaveis auxiliares de tempo
 unsigned long currentMillis = millis();
 unsigned long mqttPublishPreviousMillis = 0; // Tempo da ultima publicacao de dados no MQTT
 unsigned long motionSensorLastTrigger = 0; // Tempo da ultima deteccao de movimento
+unsigned long resetButtonPreviousChangeMillis = 0;
 
 void setup(void) 
 {
@@ -52,6 +55,7 @@ void setup(void)
   pinMode(HUMIDIFIER_PIN, OUTPUT);
   pinMode(LIGHT_PIN, OUTPUT);
   pinMode(MOTION_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(0, INPUT_PULLUP);
 
   // GPIOs inicializacao
   digitalWrite(HUMIDIFIER_PIN, HIGH);
@@ -62,6 +66,7 @@ void setup(void)
 
   // Interrupcao
   attachInterrupt(digitalPinToInterrupt(MOTION_SENSOR_PIN), detectsMovement, RISING);
+  attachInterrupt(digitalPinToInterrupt(0), resetCredentials, CHANGE);
  
   // Sensores
   if(!tsl.begin())
@@ -75,13 +80,31 @@ void setup(void)
   dht.begin();
 
   // Hello World
-  Serial.println("\n\nUFABC: Sistemas Microprocessados 2022.1\n\n\n");
+  Serial.println("\n\nUFABC: Sistemas Microprocessados 2022.1\n");
   delay(500);
   
   // Wifi
-  wifi_connect();
-  client.setServer(mqtt_broker,1883);
+  wifiConnect();
+  client.setServer(mqttBroker,1883);
 
+}
+
+// Interrupcao de deteccao do botao de reset da memoria
+// Para reset de memoria eh necessario pressionar por pelo menos 3 segundos
+ICACHE_RAM_ATTR void resetCredentials() {
+  int currentState = digitalRead(0);
+  if (currentState == LOW) {
+    if(!resetButtonPressed) {
+      resetButtonPreviousChangeMillis = millis();
+      resetButtonPressed = true;
+    }
+  } else {
+    if((millis() - resetButtonPreviousChangeMillis) > TIME_TO_RESET_CREDENTIALS) {
+       Serial.println("Apagando credenciais de Wifi da memoria e restartando...");
+       deleteWifiConnectionDataAndRestart();
+    }
+    resetButtonPressed = false;
+  }
 }
 
 // Interrupcao de deteccao de movimento
@@ -161,7 +184,7 @@ void loop(void)
 {
   // Garante que conexao MQTT sempre esta estabelecida
   if (!client.connected()) {
-    reconnect_MQTT();
+    reconnectMQTT();
   }
 
   currentMillis = millis();
@@ -174,5 +197,5 @@ void loop(void)
   // Send data to MQTT
   publishMQTTData(currentMillis);
 
-  delay(1000);
+  delay(100);
 }
