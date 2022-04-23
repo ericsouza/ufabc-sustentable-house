@@ -1,22 +1,26 @@
-#include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_TSL2561_U.h>
-#include <ESP8266WiFi.h>
-#include <PubSubClient.h>
-#include <EEPROM.h>
+// Inclusao das bibliotecas
+#include <Wire.h> // I2C
+#include <Adafruit_Sensor.h> // Sensores da Adafruit
+#include <Adafruit_TSL2561_U.h> // Sensor de Luminosidade
+#include <EEPROM.h> // Biblioteca para manipular memoria interna do ESP8266
+#include <DHT.h> // Sensor de Umidade e Temperatura
+#include <ESP8266WiFi.h> // Biblioteca para Comunicacao Network via Wifi
+#include <PubSubClient.h> // Biblioteca do Procotolo MQTT
 
-#define lightOnTimeSeconds 10
-
-//Constantes
-const bool DEBUG = false;
-const float LUX_THRESHOLD = 20.0;
-const long MQTT_PUBLISH_DATA_INTERVAL = 2000;
+// Constantes
+#define DHTTYPE DHT11 // Tipo do sensor de umidade e temperatura, nesse caso é o DHT11
+#define LIGHT_ON_TIME 10000 // Tempo em milisegundos que a luz permanecera ligada apos ultima deteccao de movimento
+#define HUMIDITY_THRESHOLD 80.0f // Limiar para ligar Umidificador, abaixo desse valor ele sera ligado
+#define LUX_THRESHOLD 20.0f // Limiar para Ligar a luz, abaixo desse valor o LED/Lampada sera ligada
+#define MQTT_PUBLISH_DATA_INTERVAL 2000 // Intervalor para publicacao dos dados dos sensores para MQTT
+#define DEBUG 1 // Habilita mensagens de debug na serial
 
 // GPIOs
-const int ESP_LED_BUILTIN = 2;
-const int HUMIDIFIER_PIN = 12;
-const int LIGHT_PIN = 15;
-const int MOTION_SENSOR_PIN = 13;
+#define BUILTIN_LED_PIN 2
+#define HUMIDIFIER_PIN 12
+#define LIGHT_PIN 15
+#define MOTION_SENSOR_PIN 13
+#define DHTPIN 14
 
 // Network
 char wifiSsid[32] = "";
@@ -27,24 +31,24 @@ PubSubClient client(wifiClient);
 
 // Sensores I2C
 Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
+DHT dht(DHTPIN, DHTTYPE); 
 
-//Variaveis para valores dos sensores
+//Variaveis para guardar os valores dos sensores
 int luxValue;
 int lightStateChanges;
-int humidityValue = 59;
-int tempValue = 24;
+float humidityValue = 0.0;
+float tempValue = 0.0;
+boolean motionSensorStarted = false;
 
 // Tempo: Variaveis auxiliares de tempo
-unsigned long mqttPublishPreviousMillis = 0;
 unsigned long currentMillis = millis();
-unsigned long motionSensorLastTrigger = 0;
-boolean motionSensorStartTimer = false;
-
+unsigned long mqttPublishPreviousMillis = 0; // Tempo da ultima publicacao de dados no MQTT
+unsigned long motionSensorLastTrigger = 0; // Tempo da ultima deteccao de movimento
 
 void setup(void) 
 {
   // GPIOs
-  pinMode(ESP_LED_BUILTIN, OUTPUT);
+  pinMode(BUILTIN_LED_PIN, OUTPUT);
   pinMode(HUMIDIFIER_PIN, OUTPUT);
   pinMode(LIGHT_PIN, OUTPUT);
   pinMode(MOTION_SENSOR_PIN, INPUT_PULLUP);
@@ -67,6 +71,8 @@ void setup(void)
   }
   tsl.enableAutoRange(true);
   tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
+  
+  dht.begin();
 
   // Hello World
   Serial.println("\n\nUFABC: Sistemas Microprocessados 2022.1\n\n\n");
@@ -78,125 +84,49 @@ void setup(void)
 
 }
 
-void readWifiConnectionData(void) {
-  EEPROM.begin(512);
-  EEPROM.get(0, wifiSsid);
-  EEPROM.get(0+sizeof(wifiSsid), wifiPassword);
-  char ok[2+1];
-  EEPROM.get(0+sizeof(wifiSsid)+sizeof(wifiPassword), ok);
-  EEPROM.end();
-  if (String(ok) != String("OK")) {
-    wifiSsid[0] = 0;
-    wifiPassword[0] = 0;
-  }
-  
-  if(strlen(wifiPassword)==0) {
-    Serial.println("\n\nDados de Wifi nao encontrados em memoria\nPor favor digite nome e senha do seu Wifi\n\n");
-    Serial.print("Digite o nome do Wifi: ");
-    while(Serial.available() == 0) {}
-    String ssid = Serial.readString();
-    ssid.trim();
-    ssid.toCharArray(wifiSsid, 32);
-    Serial.println();
-    Serial.print("Digite a senha do Wifi: ");
-    while(Serial.available() == 0) {}
-    String password = Serial.readString();
-    password.trim();
-    password.toCharArray(wifiPassword, 32);
-    Serial.println();
-
-    EEPROM.begin(512);
-    EEPROM.put(0, wifiSsid);
-    EEPROM.put(0+sizeof(wifiSsid), wifiPassword);
-    char ok[2+1] = "OK";
-    EEPROM.put(0+sizeof(wifiSsid)+sizeof(wifiPassword), ok);
-    EEPROM.commit();
-    EEPROM.end();
-  } else {
-    Serial.println();
-    Serial.println("Credenciais de Wifi Encontradas:");
-    Serial.println(wifiSsid);
-    Serial.println("********");
-  }
-}
-
-// estabelece conexao com rede wifi 2.4Ghz
-void wifi_connect(){
-  readWifiConnectionData();
-  
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid, wifiPassword);
-  Serial.print("Conectando ao Wifi");
-  while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(ESP_LED_BUILTIN, LOW);
-    delay(200);
-    digitalWrite(ESP_LED_BUILTIN, HIGH);
-    delay(200);
-    digitalWrite(ESP_LED_BUILTIN, LOW);
-    delay(200);
-    digitalWrite(ESP_LED_BUILTIN, HIGH);
-    Serial.print(".");
-  }
-  Serial.println("\n\n***************************************\n\n");
-  Serial.print("Connected to Wifi: ");
-  Serial.println(wifiSsid);
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-  digitalWrite(ESP_LED_BUILTIN, LOW);
-  Serial.println("***************************************\n\n");
-}
-
-// Restabelece conexão com broker mqtt
-void reconnect_MQTT(){
-  while (!client.connected()) {
-    delay(500);
-    client.connect("UFABC_bsUWuxIuMqCa");
-    Serial.println("Reconnecting MQTT...");
-  }
-}
-
 // Interrupcao de deteccao de movimento
 ICACHE_RAM_ATTR void detectsMovement() {
   if (DEBUG) Serial.println("Movimento Detectado!");
 
   if(luxValue < LUX_THRESHOLD) {
     digitalWrite(LIGHT_PIN, HIGH);
-    motionSensorStartTimer = true;
+    motionSensorStarted = true;
     motionSensorLastTrigger = millis();
   }
- 
 }
 
-int getLuxValueFromTSL2561(void) {
+void checkLightConditionsTask(unsigned long currentMillis) {
   if (DEBUG) Serial.print("[TSL_2661] Lendo valor do sensor...  ");
   sensors_event_t event;
   tsl.getEvent(&event);
   if (DEBUG) Serial.print(event.light);
   if (DEBUG) Serial.println(" lux");
-  return event.light;
-}
-
-void checkLightConditions(unsigned long currentMillis) {
-  luxValue = getLuxValueFromTSL2561();
+  luxValue = event.light;
+  
   int lightDigitalValue = digitalRead(LIGHT_PIN);
   
-  if(motionSensorStartTimer && (currentMillis - motionSensorLastTrigger > (lightOnTimeSeconds*1000))) {
+  if(motionSensorStarted && (currentMillis - motionSensorLastTrigger > (LIGHT_ON_TIME))) {
     if (DEBUG) Serial.println("Desligando Luz...");
     digitalWrite(LIGHT_PIN, LOW);
-    motionSensorStartTimer = false;
+    motionSensorStarted = false;
   }
 }
 
-void checkHumidityConditions(unsigned long currentMillis) {
-  if(luxValue < 20) {
+void checkHumidityConditionsTask(unsigned long currentMillis) {
+  humidityValue = dht.readHumidity();
+  if (DEBUG) Serial.print("[DHT11] Humidade: ");
+  if (DEBUG) Serial.println(humidityValue);
+  if(humidityValue < HUMIDITY_THRESHOLD) {
     digitalWrite(HUMIDIFIER_PIN, LOW);
   } else {
     digitalWrite(HUMIDIFIER_PIN, HIGH);
   }
 }
 
-void checkTemperatureConditions(unsigned long currentMillis) {
-  // TODO
+void checkTemperatureConditionsTask(unsigned long currentMillis) {
+  tempValue = dht.readTemperature();
+  if (DEBUG) Serial.print("[DHT11] Temperatura: ");
+  if (DEBUG) Serial.println(tempValue);
 }
 
 void publishMQTTData(unsigned long currentMillis){
@@ -217,13 +147,13 @@ void publishMQTTData(unsigned long currentMillis){
     client.publish("ufabc_sustentable_house/temp_value", String(tempValue).c_str(), false);
   
     // Piscar led interno indicando envio de dados via MQTT
-    digitalWrite(ESP_LED_BUILTIN, HIGH);
+    digitalWrite(BUILTIN_LED_PIN, HIGH);
     delay(50);
-    digitalWrite(ESP_LED_BUILTIN, LOW);
+    digitalWrite(BUILTIN_LED_PIN, LOW);
     delay(50);
-    digitalWrite(ESP_LED_BUILTIN, HIGH);
+    digitalWrite(BUILTIN_LED_PIN, HIGH);
     delay(50);
-    digitalWrite(ESP_LED_BUILTIN, LOW);
+    digitalWrite(BUILTIN_LED_PIN, LOW);
   }
 }
 
@@ -237,12 +167,12 @@ void loop(void)
   currentMillis = millis();
   
   // Tasks
-  checkLightConditions(currentMillis);
-  checkHumidityConditions(currentMillis);
-  checkTemperatureConditions(currentMillis);
+  checkLightConditionsTask(currentMillis);
+  checkHumidityConditionsTask(currentMillis);
+  checkTemperatureConditionsTask(currentMillis);
 
   // Send data to MQTT
   publishMQTTData(currentMillis);
 
-  delay(100);
+  delay(1000);
 }
